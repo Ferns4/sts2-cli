@@ -204,6 +204,18 @@ internal class LocLookup
 /// </summary>
 public class RunSimulator
 {
+    // Replaces removed CombatManager.IsPlayPhase. Phase tracking moved
+    // to per-player (PlayerCombatState.Phase). Returns true if any player
+    // is currently in the Play phase.
+    private static bool IsPlayPhase()
+    {
+        var state = CombatManager.Instance.DebugOnlyGetState();
+        if (state == null) return false;
+        foreach (var p in state.Players)
+            if (p.PlayerCombatState.Phase == PlayerTurnPhase.Play) return true;
+        return false;
+    }
+
     private static int? _expectedSaveSchemaVersion;
     private static bool _expectedSaveSchemaVersionReady;
     private static readonly object _expectedSaveSchemaVersionLock = new();
@@ -1008,18 +1020,18 @@ public class RunSimulator
 
     private Dictionary<string, object?> DoEndTurn(Player player)
     {
-        if (!CombatManager.Instance.IsPlayPhase)
+        if (!IsPlayPhase())
         {
             // Might be between phases — pump and check
             _syncCtx.Pump();
-            if (!CombatManager.Instance.IsPlayPhase)
+            if (!IsPlayPhase())
             {
                 if (!CombatManager.Instance.IsInProgress || player.Creature.IsDead)
                     return DetectDecisionPoint();
                 // Brief wait for ThreadPool if sync context didn't catch it
                 Thread.Sleep(100);
                 _syncCtx.Pump();
-                if (!CombatManager.Instance.IsPlayPhase)
+                if (!IsPlayPhase())
                     return DetectDecisionPoint();
             }
         }
@@ -1043,14 +1055,14 @@ public class RunSimulator
             _syncCtx.Pump();
 
             // Fallback: if turn didn't complete synchronously, keep pumping with SuppressYield on
-            if (CombatManager.Instance.IsInProgress && !CombatManager.Instance.IsPlayPhase && !player.Creature.IsDead)
+            if (CombatManager.Instance.IsInProgress && !IsPlayPhase() && !player.Creature.IsDead)
             {
                 for (int i = 0; i < 50; i++)
                 {
                     _syncCtx.Pump();
                     if (_turnStarted.IsSet || _combatEnded.IsSet) break;
                     if (!CombatManager.Instance.IsInProgress || player.Creature.IsDead) break;
-                    if (CombatManager.Instance.IsPlayPhase) break;
+                    if (IsPlayPhase()) break;
                     Thread.Sleep(5);
                 }
             }
@@ -1062,7 +1074,7 @@ public class RunSimulator
 
         // Second fallback: if still stuck after SuppressYield window, cancel and retry.
         // The WaitUntilQueue TCS is likely deadlocked.
-        if (CombatManager.Instance.IsInProgress && !CombatManager.Instance.IsPlayPhase && !player.Creature.IsDead)
+        if (CombatManager.Instance.IsInProgress && !IsPlayPhase() && !player.Creature.IsDead)
         {
             Log("EndTurn stuck, cancelling and retrying with SuppressYield...");
             try
@@ -1092,7 +1104,7 @@ public class RunSimulator
                     _syncCtx.Pump();
                     if (_turnStarted.IsSet || _combatEnded.IsSet) break;
                     if (!CombatManager.Instance.IsInProgress || player.Creature.IsDead) break;
-                    if (CombatManager.Instance.IsPlayPhase) break;
+                    if (IsPlayPhase()) break;
                     Thread.Sleep(10);
                 }
             }
@@ -1100,14 +1112,14 @@ public class RunSimulator
 
             // NUCLEAR OPTION: If STILL stuck after 2 attempts, use ThreadPool to force
             // the enemy turn processing to complete with SuppressYield permanently on.
-            if (CombatManager.Instance.IsInProgress && !CombatManager.Instance.IsPlayPhase && !player.Creature.IsDead)
+            if (CombatManager.Instance.IsInProgress && !IsPlayPhase() && !player.Creature.IsDead)
             {
                 var stuckState = CombatManager.Instance.DebugOnlyGetState();
                 var stuckEnemies = stuckState?.Enemies?.Where(e => e != null && e.IsAlive)
                     .Select(e => $"{e.Monster?.GetType().Name}(hp={e.CurrentHp})").ToList();
                 Log($"EndTurn STILL stuck after retry — nuclear fallback. Round={stuckState?.RoundNumber}, " +
                     $"Enemies=[{string.Join(",", stuckEnemies ?? new())}], " +
-                    $"IsPlayPhase={CombatManager.Instance.IsPlayPhase}, " +
+                    $"IsPlayPhase={IsPlayPhase()}, " +
                     $"IsInProgress={CombatManager.Instance.IsInProgress}, " +
                     $"ActionExecutor.IsRunning={RunManager.Instance.ActionExecutor.IsRunning}");
                 try
@@ -1133,24 +1145,24 @@ public class RunSimulator
                         if (endTurnTask.IsCompleted) break;
                         if (_turnStarted.IsSet || _combatEnded.IsSet) break;
                         if (!CombatManager.Instance.IsInProgress || player.Creature.IsDead) break;
-                        if (CombatManager.Instance.IsPlayPhase) break;
+                        if (IsPlayPhase()) break;
                         Thread.Sleep(10);
                     }
                     YieldPatches.SuppressYield = false;
 
                     // If still not play phase, try just waiting a bit more
-                    if (CombatManager.Instance.IsInProgress && !CombatManager.Instance.IsPlayPhase && !player.Creature.IsDead)
+                    if (CombatManager.Instance.IsInProgress && !IsPlayPhase() && !player.Creature.IsDead)
                     {
                         for (int i = 0; i < 200; i++)
                         {
                             _syncCtx.Pump();
                             Thread.Sleep(10);
-                            if (CombatManager.Instance.IsPlayPhase || !CombatManager.Instance.IsInProgress || player.Creature.IsDead)
+                            if (IsPlayPhase() || !CombatManager.Instance.IsInProgress || player.Creature.IsDead)
                                 break;
                         }
                     }
 
-                    if (CombatManager.Instance.IsPlayPhase)
+                    if (IsPlayPhase())
                         Log("Nuclear fallback SUCCEEDED — play phase resumed");
                     else
                     {
@@ -1825,7 +1837,7 @@ public class RunSimulator
                 goto checkCardSelect;  // Jump back to card_select handling
             }
 
-            if (CombatManager.Instance.IsInProgress && CombatManager.Instance.IsPlayPhase)
+            if (CombatManager.Instance.IsInProgress && IsPlayPhase())
             {
                 return CombatPlayState(player);
             }
@@ -1838,7 +1850,7 @@ public class RunSimulator
             {
                 _syncCtx.Pump();
                 Thread.Sleep(5);
-                if (CombatManager.Instance.IsPlayPhase) return CombatPlayState(player);
+                if (IsPlayPhase()) return CombatPlayState(player);
                 if (!CombatManager.Instance.IsInProgress) return DetectPostCombatState(player, combatRoom);
             }
             return CombatPlayState(player);
@@ -2176,7 +2188,8 @@ public class RunSimulator
             try
             {
                 var rewardsSet = new RewardsSet(player).WithRewardsFromRoom(combatRoom);
-                var rewards = rewardsSet.GenerateWithoutOffering().GetAwaiter().GetResult();
+                rewardsSet.GenerateWithoutOffering().GetAwaiter().GetResult();
+                var rewards = rewardsSet.Rewards;
                 _syncCtx.Pump();
 
                 // Auto-collect gold and potions, but present card choices to agent
@@ -2186,7 +2199,7 @@ public class RunSimulator
                     if (reward is GoldReward || reward is MegaCrit.Sts2.Core.Rewards.RelicReward
                         || reward is MegaCrit.Sts2.Core.Rewards.PotionReward)
                     {
-                        try { reward.OnSelectWrapper().GetAwaiter().GetResult(); _syncCtx.Pump(); }
+                        try { reward.SelectUnsynchronized().GetAwaiter().GetResult(); _syncCtx.Pump(); }
                         catch (Exception ex) { Log($"Auto-collect reward: {ex.Message}"); }
                     }
                     else if (reward is CardReward cr)
@@ -2661,9 +2674,9 @@ public class RunSimulator
         {
             _syncCtx.Pump();
             if (!CombatManager.Instance.IsInProgress) return;
-            if (CombatManager.Instance.IsPlayPhase) return;
+            if (IsPlayPhase()) return;
             WaitForActionExecutor();
-            if (CombatManager.Instance.IsPlayPhase || !CombatManager.Instance.IsInProgress) return;
+            if (IsPlayPhase() || !CombatManager.Instance.IsInProgress) return;
             Thread.Sleep(5);
         }
     }
@@ -3058,11 +3071,11 @@ public class RunSimulator
         private ManualResetEventSlim? _rewardWait;
         private int _rewardChoice = -1;
 
-        public CardModel? GetSelectedCardReward(
+        public MegaCrit.Sts2.Core.TestSupport.CardRewardSelection GetSelectedCardReward(
             IReadOnlyList<MegaCrit.Sts2.Core.Entities.Cards.CardCreationResult> options,
             IReadOnlyList<CardRewardAlternative> alternatives)
         {
-            if (options.Count == 0) return null;
+            if (options.Count == 0) return default;
 
             // Store pending and block until main loop resolves
             PendingRewardCards = options.ToList();
@@ -3077,8 +3090,8 @@ public class RunSimulator
             _rewardWait = null;
 
             if (choice >= 0 && choice < options.Count)
-                return options[choice].Card;
-            return null;  // Skip
+                return new MegaCrit.Sts2.Core.TestSupport.CardRewardSelection { card = options[choice].Card };
+            return default;  // Skip
         }
 
         public bool HasPendingReward => PendingRewardCards != null && _rewardWait != null;
@@ -3409,7 +3422,7 @@ public class RunSimulator
             {
                 await CreatureCmd.Damage(ctx, play.Target!, card.DynamicVars.Damage.BaseValue,
                     MegaCrit.Sts2.Core.ValueProps.ValueProp.Move, card);
-                await PowerCmd.Apply<WeakPower>(play.Target!, card.DynamicVars["WeakPower"].BaseValue,
+                await PowerCmd.Apply<WeakPower>(ctx, play.Target!, card.DynamicVars["WeakPower"].BaseValue,
                     card.Owner.Creature, card);
             }
             catch (Exception ex) { Console.Error.WriteLine($"[WARN] Neutralize safe: {ex.Message}"); }
