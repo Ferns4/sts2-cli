@@ -240,10 +240,49 @@ public class RunSimulator
     private IReadOnlyList<IReadOnlyList<CardModel>>? _pendingBundles;
     private TaskCompletionSource<IEnumerable<CardModel>>? _pendingBundleTcs;
 
+    /// <summary>
+    /// Tear down any prior run state so this RunSimulator can start a new run.
+    /// Safe to call when no run is in progress.
+    /// </summary>
+    private void ResetForNewRun()
+    {
+        if (_runState != null || RunManager.Instance.IsInProgress)
+        {
+            try { RunManager.Instance.CleanUp(graceful: true); }
+            catch (Exception ex) { Log($"Pre-run cleanup warning: {ex.Message}"); }
+        }
+        _runState = null;
+        _turnStarted.Reset();
+        _combatEnded.Reset();
+        _eventOptionChosen = false;
+        _lastEventOptionCount = 0;
+        _pendingRewards = null;
+        _pendingCardReward = null;
+        _rewardsProcessed = false;
+        _goldBeforeCombat = 0;
+        _lastKnownHp = 0;
+        _pendingBundles = null;
+        _pendingBundleTcs = null;
+
+        // CardSelectCmd holds a static _selectorStack across runs and rejects
+        // UseSelector when one is already active. Reset() exists but doesn't
+        // clear the stack, so empty it directly via reflection.
+        try
+        {
+            var stackField = typeof(CardSelectCmd).GetField("_selectorStack",
+                BindingFlags.Static | BindingFlags.NonPublic);
+            var stack = stackField?.GetValue(null);
+            stack?.GetType().GetMethod("Clear")?.Invoke(stack, null);
+            CardSelectCmd.Reset();
+        }
+        catch (Exception ex) { Log($"CardSelectCmd reset warning: {ex.Message}"); }
+    }
+
     public Dictionary<string, object?> StartRun(string character, int ascension = 0, string? seed = null, string lang = "en")
     {
         try
         {
+            ResetForNewRun();
             _loc.Lang = lang;
             EnsureModelDbInitialized();
 
@@ -498,6 +537,7 @@ public class RunSimulator
     {
         try
         {
+            ResetForNewRun();
             _loc.Lang = lang;
             EnsureModelDbInitialized();
 
