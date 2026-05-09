@@ -2150,6 +2150,24 @@ public class RunSimulator
             ["amount"] = pw.Amount,
         }).ToList();
 
+        // Minimal {id, name} entries for pile composition. Full per-card stats
+        // would bloat JSON for piles of 30+ cards; the encoder only needs id.
+        List<Dictionary<string, object?>> PileSummary(IEnumerable<CardModel>? cards)
+        {
+            if (cards == null) return new();
+            var list = new List<Dictionary<string, object?>>();
+            foreach (var c in cards)
+            {
+                if (c == null) continue;
+                list.Add(new Dictionary<string, object?>
+                {
+                    ["id"] = c.Id.ToString(),
+                    ["name"] = _loc.Card(c.Id.Entry),
+                });
+            }
+            return list;
+        }
+
         var result = new Dictionary<string, object?>
         {
             ["type"] = "decision",
@@ -2164,6 +2182,10 @@ public class RunSimulator
             ["player_powers"] = playerPowers?.Count > 0 ? playerPowers : null,
             ["draw_pile_count"] = pcs?.DrawPile?.Cards?.Count ?? 0,
             ["discard_pile_count"] = pcs?.DiscardPile?.Cards?.Count ?? 0,
+            ["draw_pile"] = PileSummary(pcs?.DrawPile?.Cards),
+            ["discard_pile"] = PileSummary(pcs?.DiscardPile?.Cards),
+            ["exhaust_pile"] = PileSummary(pcs?.ExhaustPile?.Cards),
+            ["exhaust_pile_count"] = pcs?.ExhaustPile?.Cards?.Count ?? 0,
         };
 
         // Character-specific mechanics
